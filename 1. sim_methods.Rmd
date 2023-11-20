@@ -1,0 +1,337 @@
+```{r error=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+
+### Load packages and set parameters ###
+
+packages <- c("simstudy", "mvtnorm", "ICS", "matlib", "moments", "Routliers",
+              "careless","PerFit","robustbase", "matrixcalc", "tictoc",
+              "rstatix", "ICSOutlier", "parallel")
+invisible(lapply(packages, library, character.only=TRUE))
+options(scipen = 999)
+options(digits = 7)
+
+myMCD <- function(x, ...) {
+  mcd <- robustbase::covMcd(x, nmini = 300, kmini = 2, alpha = 0.75, ...)
+  return(list(location = mcd$center, scatter = mcd$cov))
+}
+
+R          <- 2L
+no_designs <- 3
+
+```
+
+```{r ggplot, error=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+
+### Obtain ICS and benchmark results ###
+for (design in 1:no_designs) {
+  if (design == 1) {
+    load("simData.RData")
+    design <- "1a"
+    all_X <- all_X_1a
+    cr_col <- cr_col_1a
+    rm(all_X_1a, cr_col_1a, all_X_1b, cr_col_1b, all_X_2, cr_col_2)
+  } else if (design == 2) {
+    load("simData.RData")
+    design <- "1b"
+    all_X <- all_X_1b
+    cr_col <- cr_col_1b
+    rm(all_X_1a, cr_col_1a, all_X_1b, cr_col_1b, all_X_2, cr_col_2)
+  } else {
+    load("simData.RData")
+    design <- "2"
+    all_X <- all_X_2
+    cr_col <- cr_col_2
+    rm(all_X_1a, cr_col_1a, all_X_1b, cr_col_1b, all_X_2, cr_col_2)
+  }
+  
+  tic(paste0("Results obtained for simulation design ", design))
+  
+  no_com_cov     <- c()
+  no_com_mlc     <- c()
+  no_com_mcd     <- c()
+  
+  ps_row_id_cov  <- c()
+  rs_row_id_cov  <- c()
+  as_id_cov      <- c()
+  ps_row_id_mlc  <- c()
+  rs_row_id_mlc  <- c()
+  as_id_mlc      <- c()
+  ps_row_id_mcd  <- c()
+  rs_row_id_mcd  <- c()
+  as_id_mcd      <- c()
+  
+  ps_row_mmd_cov <- c()
+  rs_row_mmd_cov <- c()
+  as_mmd_cov     <- c()
+  ps_row_mmd_mlc <- c()
+  rs_row_mmd_mlc <- c()
+  as_mmd_mlc     <- c()
+  ps_row_mmd_mcd <- c()
+  rs_row_mmd_mcd <- c()
+  as_mmd_mcd     <- c()
+  
+  ps_row_md      <- c()
+  rs_row_md      <- c()
+  as_md          <- c()
+  ps_row_gp      <- c()
+  rs_row_gp      <- c()
+  as_gp          <- c()
+  
+  items_flag_cov <- c()
+  items_flag_mlc <- c()
+  items_flag_mcd <- c()
+  
+  ps_col_id_cov  <- c()
+  rs_col_id_cov  <- c()
+  ps_col_id_mlc  <- c()
+  rs_col_id_mlc  <- c()
+  ps_col_id_mcd  <- c()
+  rs_col_id_mcd  <- c()
+  
+  ps_col_mmd_cov <- c()
+  rs_col_mmd_cov <- c()
+  ps_col_mmd_mlc <- c()
+  rs_col_mmd_mlc <- c()
+  ps_col_mmd_mcd <- c()
+  rs_col_mmd_mcd <- c()
+  
+  seed_fix <- rep(1:R, each=3)
+  for (i in seq_len(R*num_epsilons)) {
+      print(paste0(i, "/", R*num_epsilons))
+      set.seed(seeds[seed_fix[i]])
+      X          <- all_X[[i]]
+      cr_row_idx <- cr_row[[i]]
+      top_e      <- length(cr_row_idx)
+      cr_col_idx <- cr_col[[i]]
+      Cov        <- cov(X)
+      Cov4       <- cov4(X)
+      Mlc        <- tM(X)$V
+      Mcd        <- covMcd(X, nmini = 300, kmini = 2, alpha = 0.75)$cov
+      S_pairs    <- list(list(Cov,Cov4), list(Mlc,Cov), list(Mcd,Cov))
+      Z_list     <- list()
+      
+      inv_error  <- FALSE
+      tryCatch( {
+        for (pair in seq_along(S_pairs)){
+          set.seed(seeds[seed_fix[i]])
+          S_1            <- S_pairs[[pair]][[1]]
+          S_2            <- S_pairs[[pair]][[2]]
+          ratio          <- chol2inv(chol(S_1)) %*% S_2
+          B              <- t(eigen(ratio)$vectors) # B has rowwise eigenvectors
+          m_1            <- t(matrix(replicate(nrow(X), colMeans(X)), ncol = nrow(X)))
+          X_centered     <- as.matrix(X - m_1)
+          Z              <- as.data.frame(X_centered %*% t(B))
+          Z_list[[pair]] <- Z
+          icsX           <- ics2(X, S1 = myMCD, S2 = MeanCov) }
+      }, error = function(e) { inv_error <<- TRUE })
+      
+      if (inv_error) { next }
+      
+      for (pair in seq_along(S_pairs)){
+        set.seed(seeds[seed_fix[i]])
+        Z           <- Z_list[[pair]]
+        
+        for (k in 1:num_items){
+          if (jarque.test(Z[ , k])$p.value >= 0.05) { break }
+        }
+        no_selected <- k - 1
+        
+        if (no_selected > 0) {
+          ## Rowwise 
+          # ID method
+          if (pair == 1) {
+            icsX <- ics2(X, S1 = MeanCov, S2 = Mean3Cov4) 
+          } else if (pair == 2) {
+            icsX <- ics2(X, S1 = tM, S2 = MeanCov)
+          } else {
+            icsX <- ics2(X, S1 = myMCD, S2 = MeanCov) }
+          ics_dists         <- ics.distances(icsX, index = seq_len(no_selected))
+          id_pred           <- outliers_mad(ics_dists, threshold = 2)$outliers_pos
+          precision_row_id  <- sum(id_pred %in% cr_row_idx) / length(id_pred)
+          recall_row_id     <- sum(id_pred %in% cr_row_idx) / length(cr_row_idx)
+          
+          id_pred           <- which(ics_dists >= sort(ics_dists, decreasing=T)[top_e], arr.ind=TRUE)
+          accuracy_id       <- sum(id_pred %in% cr_row_idx) / length(cr_row_idx)
+          
+          
+          # MMD method
+          mmd_error <- FALSE
+          tryCatch( {
+            res_mmd           <- outliers_mcd(Z[, 1:no_selected], alpha = 0.10)
+            mmd_pred          <- unname(res_mmd$outliers_pos)
+            precision_row_mmd <- sum(mmd_pred %in% cr_row_idx) / length(mmd_pred)
+            recall_row_mmd    <- sum(mmd_pred %in% cr_row_idx) / length(cr_row_idx)
+            
+            dist_from_center  <- res_mmd$dist_from_center
+            mmd_pred          <- 
+              which(dist_from_center >= sort(dist_from_center, decreasing=T)[top_e], arr.ind=TRUE)
+            mmd_pred          <- unname(mmd_pred)
+            accuracy_mmd      <- sum(mmd_pred %in% cr_row_idx) / length(cr_row_idx) },
+          error = function(e) { mmd_error <<- TRUE })
+  
+          if (mmd_error) {
+            mmd_pred          <- c()
+            precision_row_mmd <- NA
+            recall_row_mmd    <- NA
+            accuracy_mmd      <- NA }
+          
+          ## Cellwise 
+          mad_pred   <- c()
+          for (f in 1:no_selected) {
+            out_ind  <- outliers_mad(B[f, ], threshold = 3)$outliers_pos
+            mad_pred <- append(mad_pred, out_ind) }
+          mad_pred   <- unique(mad_pred)
+          
+          ps_col_mmd_i     <- c()
+          rs_col_mmd_i     <- c()
+          ps_col_id_i      <- c()
+          rs_col_id_i      <- c()
+          row_pred_list    <- list(id_pred, mmd_pred)
+          for (method in seq_along(row_pred_list)) {
+            row_pred_idx <- row_pred_list[[method]]
+            for (g in row_pred_idx) {
+              if (g %in% cr_row_idx) {
+                idx          <- which(cr_row_idx == g)
+                cr_cells     <- unlist(cr_col_idx[idx])
+                no_cell_true <- length(cr_cells)
+                no_cell_pred <- length(mad_pred)
+                if (no_cell_pred == 0) {
+                  precision  <- 0
+                } else {
+                  precision  <- sum(mad_pred %in% cr_cells) / no_cell_pred}
+                if (no_cell_true == 0){
+                  recall       <- 0
+                } else {
+                  recall       <- sum(mad_pred %in% cr_cells) / length(cr_cells)
+                } }
+              else {
+                recall       <- 0
+                precision    <- 0 }
+              
+              if (method == 1) {
+                ps_col_id_i  <- append(ps_col_id_i, precision)
+                rs_col_id_i  <- append(rs_col_id_i, recall)
+              } else {
+                ps_col_mmd_i <- append(ps_col_mmd_i, precision)
+                rs_col_mmd_i <- append(rs_col_mmd_i, recall) } } }
+          precision_col_id   <- mean(ps_col_id_i)
+          recall_col_id      <- mean(rs_col_id_i)
+          precision_col_mmd  <- mean(ps_col_mmd_i)
+          recall_col_mmd     <- mean(rs_col_mmd_i)
+        } else {
+          mad_pred           <- NA
+          precision_row_id   <- NA
+          recall_row_id      <- NA
+          precision_col_id   <- NA
+          recall_col_id      <- NA
+          precision_row_mmd  <- NA
+          recall_row_mmd     <- NA
+          precision_col_mmd  <- NA
+          recall_col_mmd     <- NA
+          accuracy_id        <- NA
+          accuracy_mmd       <- NA
+          }
+        
+        if (pair == 1) {
+          no_com_cov     <- c(no_com_cov, no_selected)
+          items_flag_cov <- c(items_flag_cov, paste(mad_pred, collapse=" "))
+          
+          ps_row_id_cov  <- c(ps_row_id_cov, precision_row_id)
+          rs_row_id_cov  <- c(rs_row_id_cov, recall_row_id)
+          as_id_cov      <- c(as_id_cov, accuracy_id)
+          ps_col_id_cov  <- c(ps_col_id_cov, precision_col_id)
+          rs_col_id_cov  <- c(rs_col_id_cov, recall_col_id)
+          
+          ps_row_mmd_cov <- c(ps_row_mmd_cov, precision_row_mmd)
+          rs_row_mmd_cov <- c(rs_row_mmd_cov, recall_row_mmd)
+          as_mmd_cov     <- c(as_mmd_cov, accuracy_mmd)
+          ps_col_mmd_cov <- c(ps_col_mmd_cov, precision_col_mmd)
+          rs_col_mmd_cov <- c(rs_col_mmd_cov, recall_col_mmd)
+        } else if (pair == 2) {
+          no_com_mlc     <- c(no_com_mlc, no_selected)
+          items_flag_mlc <- c(items_flag_mlc, paste(mad_pred, collapse=" "))
+          
+          ps_row_id_mlc  <- c(ps_row_id_mlc, precision_row_id)
+          rs_row_id_mlc  <- c(rs_row_id_mlc, recall_row_id)
+          as_id_mlc      <- c(as_id_mlc, accuracy_id)
+          ps_col_id_mlc  <- c(ps_col_id_mlc, precision_col_id)
+          rs_col_id_mlc  <- c(rs_col_id_mlc, recall_col_id)
+          
+          ps_row_mmd_mlc <- c(ps_row_mmd_mlc, precision_row_mmd)
+          rs_row_mmd_mlc <- c(rs_row_mmd_mlc, recall_row_mmd)
+          as_mmd_mlc     <- c(as_mmd_mlc, accuracy_mmd)
+          ps_col_mmd_mlc <- c(ps_col_mmd_mlc, precision_col_mmd)
+          rs_col_mmd_mlc <- c(rs_col_mmd_mlc, recall_col_mmd)
+        } else {
+          no_com_mcd     <- c(no_com_mcd, no_selected)
+          items_flag_mcd <- c(items_flag_mcd, paste(mad_pred, collapse=" "))
+          
+          ps_row_id_mcd  <- c(ps_row_id_mcd, precision_row_id)
+          rs_row_id_mcd  <- c(rs_row_id_mcd, recall_row_id)
+          as_id_mcd      <- c(as_id_mcd, accuracy_id)
+          ps_col_id_mcd  <- c(ps_col_id_mcd, precision_col_id)
+          rs_col_id_mcd  <- c(rs_col_id_mcd, recall_col_id)
+          
+          ps_row_mmd_mcd <- c(ps_row_mmd_mcd, precision_row_mmd)
+          rs_row_mmd_mcd <- c(rs_row_mmd_mcd, recall_row_mmd)
+          as_mmd_mcd     <- c(as_mmd_mcd, accuracy_mmd)
+          ps_col_mmd_mcd <- c(ps_col_mmd_mcd, precision_col_mmd)
+          rs_col_mmd_mcd <- c(rs_col_mmd_mcd, recall_col_mmd) } 
+      }
+      
+      # BM MH
+      res_md    <- mahad(X, plot = FALSE, flag = TRUE, na.rm = FALSE, confidence = 0.90)
+      md_pred   <- as.integer(rownames(res_md[res_md$flagged == TRUE, ]))
+      precision <- sum(md_pred %in% cr_row_idx) / length(md_pred)
+      recall    <- sum(md_pred %in% cr_row_idx) / length(cr_row_idx)
+      ps_row_md <- c(ps_row_md, precision)
+      rs_row_md <- c(rs_row_md, recall)
+      
+      dists     <- res_md$d_sq
+      md_pred   <- which(dists >= sort(dists, decreasing=T)[top_e], arr.ind=TRUE)
+      as_md     <- c(as_md, sum(md_pred %in% cr_row_idx) / length(cr_row_idx))
+      
+      # BM GP
+      X_gp      <- X - 1
+      res_gp    <- Gpoly(X_gp, num_likert)
+      gp_pred   <- flagged.resp(res_gp, Blvl = 0.10)$Scores[, "FlaggedID"]
+      precision <- sum(gp_pred %in% cr_row_idx) / length(gp_pred)
+      recall    <- sum(gp_pred %in% cr_row_idx) / length(cr_row_idx)
+      ps_row_gp <- c(ps_row_gp, precision)
+      rs_row_gp <- c(rs_row_gp, recall)
+      
+      pfscores  <- unlist(res_gp$PFscores)
+      gp_pred   <- which(pfscores >= sort(pfscores, decreasing=T)[top_e], arr.ind=TRUE)
+      gp_pred   <- unname(gp_pred)
+      as_gp     <- c(as_gp, sum(gp_pred %in% cr_row_idx) / length(cr_row_idx))
+  }
+  
+  ps_row_id  <- data.frame(ps_row_id_cov, ps_row_id_mlc, ps_row_id_mcd)
+  rs_row_id  <- data.frame(rs_row_id_cov, rs_row_id_mlc, rs_row_id_mcd)
+  as_id      <- data.frame(as_id_cov, as_id_mlc, as_id_mcd)
+  ps_row_mmd <- data.frame(ps_row_mmd_cov, ps_row_mmd_mlc, ps_row_mmd_mcd)
+  rs_row_mmd <- data.frame(rs_row_mmd_cov, rs_row_mmd_mlc, rs_row_mmd_mcd)
+  as_mmd     <- data.frame(as_mmd_cov, as_mmd_mlc, as_mmd_mcd)
+  
+  ps_row_bm  <- data.frame(ps_row_md, ps_row_gp)
+  rs_row_bm  <- data.frame(rs_row_md, rs_row_gp)
+  as_bm      <- data.frame(as_md, as_gp)
+  
+  ps_col_id  <- data.frame(ps_col_id_cov, ps_col_id_mlc, ps_col_id_mcd)
+  rs_col_id  <- data.frame(rs_col_id_cov, rs_col_id_mlc, rs_col_id_mcd)
+  ps_col_mmd <- data.frame(ps_col_mmd_cov, ps_col_mmd_mlc, ps_col_mmd_mcd)
+  rs_col_mmd <- data.frame(rs_col_mmd_cov, rs_col_mmd_mlc, rs_col_mmd_mcd)
+  
+  no_com     <- data.frame(no_com_cov, no_com_mlc, no_com_mcd)
+  items_flag <- data.frame(items_flag_cov, items_flag_mlc, items_flag_mcd)
+
+  
+  file_name <- paste0("sim_results_", design,".RData")
+  save(ps_row_id, rs_row_id, ps_row_mmd, rs_row_mmd,
+       ps_row_bm, rs_row_bm, as_id, as_mmd, as_bm,
+       ps_col_id, rs_col_id, ps_col_mmd, rs_col_mmd,
+       no_com, items_flag,
+       file = file_name)
+  toc()
+}
+
+```

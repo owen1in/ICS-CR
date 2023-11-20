@@ -1,0 +1,291 @@
+```{r error=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+
+## SIM ##
+
+packages <- c("simstudy", "mvtnorm", "ICS", "matlib", "moments", "Routliers",
+              "careless","PerFit","robustbase", "matrixcalc", "tictoc",
+              "rstatix", "ICSOutlier", "parallel", "ggplot2", "gridExtra",
+              "dplyr", "tidyr", "tidyverse", "reshape2", "patchwork")
+invisible(lapply(packages, library, character.only=TRUE))
+options(scipen = 999)
+options(digits = 7)
+
+myMCD <- function(x, ...) {
+  mcd <- robustbase::covMcd(x, nmini = 300, kmini = 2, alpha = 0.75, ...)
+  return(list(location = mcd$center, scatter = mcd$cov))
+}
+
+load("simData.RData")
+
+for (i in 10:12) {
+  ifelse(i == 10, epsilon <- "5", 
+         ifelse(i == 11, epsilon <- "10", 
+                epsilon <- "15"))
+  for (design in 1:3) {
+    if (design == 1) {
+      design_name <- "1a"
+      all_X <- all_X_1a
+      cr_col <- cr_col_1a
+    } else if (design == 2) {
+      design_name <- "1b"
+      all_X <- all_X_1b
+      cr_col <- cr_col_1b
+    } else {
+      design_name <- "2"
+      all_X <- all_X_2
+      cr_col <- cr_col_2
+    }
+    set.seed(seeds[i])
+    X          <- all_X[[i]]
+    cr_row_idx <- cr_row[[i]]
+    top_e      <- length(cr_row_idx)
+    cr_col_idx <- cr_col[[i]]
+    Cov        <- cov(X)
+    Cov4       <- cov4(X)
+    Mlc        <- tM(X)$V
+    Mcd        <- covMcd(X, nmini = 300, kmini = 2, alpha = 0.75)$cov
+    S_pairs    <- list(list(Cov,Cov4), list(Mlc,Cov), list(Mcd,Cov))
+    plots      <- list()
+    plots_B    <- list()
+    for (pair in seq_along(S_pairs)) {
+      if (pair == 1) {
+        pair_name <- expression(italic("COV-COV"["4"]))
+      } else if (pair == 2) {
+        pair_name <- expression(italic("MLC-COV"))
+      } else {
+        pair_name <- expression(italic("MCD"[".75"]-"COV"))
+      }
+      S_1          <- S_pairs[[pair]][[1]]
+      S_2          <- S_pairs[[pair]][[2]]
+      ratio        <- chol2inv(chol(S_1)) %*% S_2
+      B            <- t(eigen(ratio)$vectors) # B has rowwise eigenvectors
+      m_1          <- t(matrix(replicate(nrow(X), colMeans(X)), ncol = nrow(X)))
+      X_centered   <- as.matrix(X - m_1)
+      Z            <- as.data.frame(X_centered %*% t(B))
+      Z            <- Z[, 1:(ncol(Z)-1)]
+      colnames(Z)  <- gsub(x = colnames(Z), pattern = "V", replacement = "IC")
+      Z$index      <- 1:nrow(Z)
+      
+      # Plot
+      Z_melt       <- melt(Z, "index")
+      careless_idx <- cr_row_idx
+      color_label  <- rep("Regular", n)
+      for (j in 1:n) {
+        if (j %in% careless_idx) {
+          color_label[j] <- "CR"
+        }
+      }
+      colnames(Z_melt)[ncol(Z_melt)] <- "score"
+      
+      plots[[pair]] <- ggplot(Z_melt, aes(x = index, y = score)) +
+        geom_point(aes(colour = rep(color_label, (num_items - 1)))) +
+        facet_grid(. ~ variable) +
+        scale_color_manual(
+          name = "Legend",
+          breaks = c("Regular", "CR"),
+          values = c("Regular" = "black", "CR" = "red")
+        ) +
+        ggtitle(pair_name) +
+        theme(
+          axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_blank(),
+          plot.title = element_text(hjust = 0.5)
+        )
+      
+      eigenvalue_indicator <- list()
+      for (j in 1:num_items) {
+        eigenvalue_indicator[j] <- paste0(round(eigen(ratio)$values, 2)[j])
+      }
+      heat_map_data <- B[, ncol(B):1]
+      names(heat_map_data) <- paste("X", 1:nrow(B))
+      heat_map_data_2 <-
+        heat_map_data %>%
+        as_tibble() %>%
+        rownames_to_column("Var1") %>%
+        pivot_longer(-Var1, names_to = "Var2", values_to = "Legend") %>%
+        mutate(Var1 = factor(Var1, levels = 1:nrow(B)),
+               Var2 = factor(gsub("V", "", Var2), levels = 1:nrow(B)))
+      heat_map_data_2 <- heat_map_data_2[1:(nrow(heat_map_data_2) - num_items), ]
+      plots_B[[pair]] <- ggplot(heat_map_data_2, aes(Var1, Var2)) +
+        geom_tile(aes(fill = Legend)) +
+        geom_text(aes(label = round(Legend, 2))) +
+        scale_fill_gradient2(
+          low = "red3",
+          mid = "white",
+          high = "blue3",
+          limits = c(-1, 1)
+        ) +
+        guides(fill = guide_colourbar(
+          barwidth = 0.5,
+          barheight = 5,
+          ticks = FALSE
+        )) +
+        scale_x_discrete(name = "Eigenvector + value", labels = eigenvalue_indicator) +
+        scale_y_discrete(name = "", labels = nrow(B):1) +
+        ggtitle(pair_name) +
+        theme(plot.title = element_text(hjust = 0.5),
+              panel.background = element_blank())
+    }
+    p.out <- do.call(grid.arrange, c(plots, ncol = 1))
+    file_name <- paste0("3. Plots/inspect_sim_", design_name, "_", epsilon,".pdf")
+    ggsave(plot = p.out, file_name, width = 10, height = 6, dpi = 300)
+    
+    p.out <- do.call(grid.arrange, c(plots_B, ncol = 1))
+    file_name <- paste0("3. Plots/inspect_sim_", design_name, "_", epsilon,"_B.pdf")
+    ggsave(plot = p.out, file_name, width = 10, height = 12, dpi = 300)
+  }
+}
+```
+
+```{r}
+
+# Depth case
+  
+ps_row_id_cov  <- c()
+rs_row_id_cov  <- c()
+ps_row_id_mlc  <- c()
+rs_row_id_mlc  <- c()
+ps_row_id_mcd  <- c()
+rs_row_id_mcd  <- c()
+
+all_X <- all_X_1a
+cr_col <- cr_col_1a
+
+for (i in 10:12){
+  print(i)
+  set.seed(seeds[i])
+  no_selected <-1
+  X           <- all_X[[i]]
+  cr_row_idx  <- cr_row[[i]]
+  cr_col_idx  <- cr_col[[i]]
+  
+  # COV-COV4
+  icsX             <- ics2(X, S1 = MeanCov, S2 = Mean3Cov4) 
+  ics_dists        <- ics.distances(icsX, index = seq_len(no_selected))
+  id_pred          <- outliers_mad(ics_dists, threshold = 2)$outliers_pos
+  precision        <- sum(id_pred %in% cr_row_idx) / length(id_pred)
+  recall           <- sum(id_pred %in% cr_row_idx) / length(cr_row_idx) 
+  ps_row_id_cov    <- c(ps_row_id_cov, precision)
+  rs_row_id_cov    <- c(rs_row_id_cov, recall)
+  
+  # MLC-COV
+  icsX             <- ics2(X, S1 = tM, S2 = MeanCov)
+  ics_dists        <- ics.distances(icsX, index = seq_len(no_selected))
+  id_pred          <- outliers_mad(ics_dists, threshold = 2)$outliers_pos
+  precision        <- sum(id_pred %in% cr_row_idx) / length(id_pred)
+  recall           <- sum(id_pred %in% cr_row_idx) / length(cr_row_idx) 
+  ps_row_id_mlc    <- c(ps_row_id_mlc, precision)
+  rs_row_id_mlc    <- c(rs_row_id_mlc, recall)
+
+  #MCD-COV
+  icsX             <- ics2(X, S1 = myMCD, S2 = MeanCov)
+  ics_dists        <- ics.distances(icsX, index = seq_len(no_selected))
+  id_pred          <- outliers_mad(ics_dists, threshold = 2)$outliers_pos
+  precision        <- sum(id_pred %in% cr_row_idx) / length(id_pred)
+  recall           <- sum(id_pred %in% cr_row_idx) / length(cr_row_idx) 
+  ps_row_id_mcd    <- c(ps_row_id_mcd, precision)
+  rs_row_id_mcd    <- c(rs_row_id_mcd, recall)
+
+}
+
+ps_row_id  <- data.frame(ps_row_id_cov, ps_row_id_mlc, ps_row_id_mcd)
+rs_row_id  <- data.frame(rs_row_id_cov, rs_row_id_mlc, rs_row_id_mcd)
+
+```
+
+```{r error=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+
+## IPIP ##
+
+packages <- c("simstudy", "mvtnorm", "ICS", "matlib", "moments", "Routliers",
+              "careless","PerFit","robustbase", "matrixcalc", "tictoc",
+              "rstatix", "ICSOutlier", "parallel", "ggplot2", "gridExtra",
+              "dplyr", "tidyr", "tidyverse", "reshape2", "patchwork")
+invisible(lapply(packages, library, character.only=TRUE))
+options(scipen = 999)
+options(digits = 7)
+
+myMCD <- function(x, ...) {
+  mcd <- robustbase::covMcd(x, nmini = 300, kmini = 2, alpha = 0.75, ...)
+  return(list(location = mcd$center, scatter = mcd$cov))
+}
+
+load("ipipData.RData")
+
+p_mins <- list()
+
+for (i in 1:num_p_min) {
+  set.seed(i)
+  df         <- all_X[[i]]
+  X          <- df[, 1:(ncol(df)-2)]
+  num_items  <- ncol(X)
+  num_likert <- 6
+  cr_row_idx <- cr_row[[i]]
+  cr_col_idx <- cr_col[[i]]
+  Cov        <- cov(X)
+  Cov4       <- cov4(X)
+  Mlc        <- tM(X)$V
+  Mcd        <- covMcd(X, nmini = 300, kmini = 2, alpha = 0.75)$cov
+  S_pairs    <- list(list(Cov,Cov4), list(Mlc,Cov), list(Mcd,Cov))
+  
+  plots <- list()
+  for (pair in seq_along(S_pairs)) {
+    if (pair == 1) {
+      pair_name <- expression(italic("COV-COV"["4"]))
+    } else if (pair == 2) {
+      pair_name <- expression(italic("MLC-COV"))
+    } else {
+      pair_name <- expression(italic("MCD"[".75"]-"COV"))
+    }
+    S_1          <- S_pairs[[pair]][[1]]
+    S_2          <- S_pairs[[pair]][[2]]
+    ratio        <- chol2inv(chol(S_1)) %*% S_2
+    B            <- t(eigen(ratio)$vectors) # B has rowwise eigenvectors
+    m_1          <- t(matrix(replicate(nrow(X), colMeans(X)), ncol = nrow(X)))
+    X_centered   <- as.matrix(X - m_1)
+    Z            <- as.data.frame(X_centered %*% t(B))
+    Z            <- Z[, 1:(ncol(Z)-1)]
+    colnames(Z)  <- gsub(x = colnames(Z), pattern = "V", replacement = "IC")  
+    Z$index      <- 1:nrow(Z)
+    Z_melt       <- melt(Z, "index")
+    careless_idx <- cr_row_idx
+    color_label  <- rep("Regular", n)
+    for (j in 1:n) {
+      if (j %in% careless_idx) {
+        color_label[j] <- "CR"
+      }
+    }
+    colnames(Z_melt)[ncol(Z_melt)] <- "score"
+    
+    plots[[pair]] <- ggplot(Z_melt, aes(x = index, y = score)) +
+      geom_point(aes(colour = rep(color_label, (num_items-1)))) +
+      facet_grid(. ~ variable) +
+      scale_color_manual(
+        name = "Legend",
+        breaks = c("Regular", "CR"),
+        values = c("Regular" = "black", "CR" = "red")
+      ) +
+      ggtitle(pair_name) +
+      theme(
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(hjust = 0.5)
+      )
+  }
+  if (i == 1) {
+    pmin <- "15"
+  } else if (i == 2) {
+    pmin <- "25"
+  } else {
+    pmin <- "35"
+  }
+  p.out <- do.call(grid.arrange, c(plots, ncol = 1))
+  file_name <- paste0("3. Plots/inspect_ipip_", pmin,".pdf")
+  ggsave(plot = p.out, file_name, width = 17, height = 10, dpi = 300)
+}
+
+```

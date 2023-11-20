@@ -1,0 +1,102 @@
+```{r}
+library(tictoc)
+tic("Data sets constructed successfully")
+
+### Real-life data preprocessing ###
+ 
+df           <- read.csv("Full_data_survey.csv")
+cols_to_keep <- gsub(" ", "", tolower(strsplit(df[3, ncol(df) - 6], split = "|", fixed = TRUE)[[1]]))
+cols_to_keep <- colnames(df)[colnames(df) %in% cols_to_keep]
+cols_to_keep <- c(cols_to_keep, colnames(df)[grepl("DO" , names(df))])
+cols_to_keep <- cols_to_keep[(cols_to_keep != "bs1")&(cols_to_keep != "bs2")]
+df           <- df[, cols_to_keep, drop = FALSE]
+
+# Account for negatively coded items
+df           <- df[2:nrow(df), ]
+rownames(df) <- NULL
+df[, 1:100]  <- lapply(df[, 1:100], as.integer)
+df[df==7]    <- 6
+for (i in seq(6, 100, 10)) {
+  df[, i:(i+4)] <- 7 - df[, i:(i+4)]
+}
+
+# Preprocessing
+n                       <- nrow(df)
+display_order           <- df[ , grepl( "DO" , names( df ) ) ]
+display_order$order     <- paste(display_order$DO.BR.FL_120, display_order$DO.BR.FL_118, display_order$DO.BR.FL_430)
+display_order           <- display_order[, c(1, ncol(display_order))]
+answers_display_ordered <- data.frame()
+cr_location             <- list()
+for (i in seq_len(n)) {
+  group <- display_order$DO.BR.FL_9[i]
+  if ((group == "cond4") | (group =="cond3")) {
+    real_order              <- display_order$order[i]
+    real_order              <- strsplit(real_order,split="|",fixed=TRUE)[[1]]
+    real_order              <- gsub(" ", "", tolower(real_order))
+    real_order              <- real_order[(real_order != "bs1")&(real_order != "bs2")]
+    notif                   <- grep(paste0("^", "cond"), real_order)
+    cr_location[[i]]        <- notif
+    real_order              <- real_order[-notif]
+    answer                  <- df[i, , drop = FALSE]
+    answer_display_ordered  <- answer[, real_order]
+    answers_display_ordered <- rbind(answers_display_ordered, 
+                                     setNames(answer_display_ordered, names(answers_display_ordered)))
+  } else {
+    real_order              <- display_order$order[i]
+    real_order              <- strsplit(real_order,split="|",fixed=TRUE)[[1]]
+    real_order              <- gsub(" ", "", tolower(real_order))
+    real_order              <- real_order[(real_order != "bs1")&(real_order != "bs2")]
+    answer                  <- df[i, , drop = FALSE]
+    answer_display_ordered  <- answer[, real_order]
+    answers_display_ordered <- rbind(answers_display_ordered, setNames(answer_display_ordered, names(answers_display_ordered)))
+    cr_location[[i]]        <- -1
+  }
+}
+p                                 <- 100
+colnames(answers_display_ordered) <- 1:p
+answers_display_ordered$cr_start  <- cr_location
+answers_display_ordered$group     <- gsub("cond", "", display_order$DO.BR.FL_9)
+answers_display_ordered           <- na.omit(answers_display_ordered)
+df                                <- answers_display_ordered
+df$group                          <- as.integer(df$group)
+n                                 <- nrow(df)
+
+### Check to which contamination level each removed items leads to ###
+new_p <- c()
+new_e <- c()
+for (i in 100:2) {
+  new_p <- c(new_p, (i-1))
+  remove_array <- i:p
+  check_df <- df[,-remove_array]
+  to_group_1 <- which(df$cr_start >= i)
+  check_df[to_group_1, "group"] <- 1
+  check_df[to_group_1, "cr_start"] <- -1
+  no_cr <- length(which(check_df$group > 2))
+  new_e <- c(new_e, no_cr / n)
+}
+result <- data.frame(new_p, new_e)
+
+p_minuses <- c(15, 25, 35)
+num_p_min <- length(p_minuses)
+cr_row    <- list()
+cr_col    <- list()
+all_X     <- list()
+
+for (p_min in p_minuses) {
+  remove_array <- (p_min+1):p
+  X <- df[,-remove_array]
+  to_group_1 <- which(df$cr_start > p_min)
+  X[to_group_1, "group"] <- 1
+  X[to_group_1, "cr_start"] <- -1
+  X.cr <- X[X$cr_start > 0, (ncol(X)-1):ncol(X)]
+  cr_row      <- append(cr_row, list(as.integer(rownames(X.cr))))
+  cr_col      <- append(cr_col, list(as.vector(X.cr$cr_start, mode='integer')))
+  all_X       <- append(all_X, list(X))
+}
+
+
+save(all_X, cr_row, cr_col, n, num_p_min, file = "ipipData.RData")
+toc()
+rm(list = ls())
+
+```

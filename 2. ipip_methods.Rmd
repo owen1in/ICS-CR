@@ -1,0 +1,355 @@
+```{r error=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+
+### Load packages and set parameters ###
+
+packages <- c("simstudy", "mvtnorm", "ICS", "matlib", "moments", "Routliers",
+              "careless","PerFit","robustbase", "matrixcalc", "tictoc",
+              "rstatix", "ICSOutlier", "parallel", "ggplot2", "gridExtra")
+invisible(lapply(packages, library, character.only=TRUE))
+options(scipen = 999)
+options(digits = 7)
+
+myMCD <- function(x, ...) {
+  mcd <- robustbase::covMcd(x, ...)
+  return(list(location = mcd$center, scatter = mcd$cov))
+}
+
+set.seed(88888888)
+seeds <- as.integer(round(1e8 * runif(3), 0))
+
+load("ipipData.RData")
+
+```
+
+```{r ggplot, error=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+
+### Obtain ICS and benchmark results ###
+tic("Results obtained")
+
+no_com_cov     <- c()
+no_com_mlc     <- c()
+no_com_mcd     <- c()
+
+ps_row_id_cov  <- c()
+rs_row_id_cov  <- c()
+as_id_cov      <- c()
+ps_row_id_mlc  <- c()
+rs_row_id_mlc  <- c()
+as_id_mlc      <- c()
+ps_row_id_mcd  <- c()
+rs_row_id_mcd  <- c()
+as_id_mcd      <- c()
+
+ps_row_mmd_cov <- c()
+rs_row_mmd_cov <- c()
+as_mmd_cov     <- c()
+ps_row_mmd_mlc <- c()
+rs_row_mmd_mlc <- c()
+as_mmd_mlc     <- c()
+ps_row_mmd_mcd <- c()
+rs_row_mmd_mcd <- c()
+as_mmd_mcd     <- c()
+
+group3_id_cov  <- c()
+group3_id_mlc  <- c()
+group3_id_mcd  <- c()
+
+group3_mmd_cov <- c()
+group3_mmd_mlc <- c()
+group3_mmd_mcd <- c()
+
+group4_id_cov  <- c()
+group4_id_mlc  <- c()
+group4_id_mcd  <- c()
+
+group4_mmd_cov <- c()
+group4_mmd_mlc <- c()
+group4_mmd_mcd <- c()
+
+ps_row_md      <- c()
+rs_row_md      <- c()
+as_md          <- c()
+ps_row_gp      <- c()
+rs_row_gp      <- c()
+as_gp          <- c()
+
+items_flag_cov <- c()
+items_flag_mlc <- c()
+items_flag_mcd <- c()
+
+ps_col_id_cov  <- c()
+rs_col_id_cov  <- c()
+ps_col_id_mlc  <- c()
+rs_col_id_mlc  <- c()
+ps_col_id_mcd  <- c()
+rs_col_id_mcd  <- c()
+
+ps_col_mmd_cov <- c()
+rs_col_mmd_cov <- c()
+ps_col_mmd_mlc <- c()
+rs_col_mmd_mlc <- c()
+ps_col_mmd_mcd <- c()
+rs_col_mmd_mcd <- c()
+
+true_group     <- c()
+seed_fix <- rep(1:num_p_min, each=3)
+for (i in seq_len(num_p_min)) {
+    print(paste0(i, "/", num_p_min))
+    set.seed(seeds[seed_fix[i]])
+    df         <- all_X[[i]]
+    X          <- df[, 1:(ncol(df)-2)]
+    num_items  <- ncol(X)
+    num_likert <- 6
+    cr_row_idx <- cr_row[[i]]
+    top_e      <- length(cr_row_idx)
+    cr_col_idx <- cr_col[[i]]
+    group      <- df[df$cr_start>0, "group"]
+    true_group <- c(true_group, sum(group==3))
+    true_group <- c(true_group, sum(group==4))
+    Cov        <- cov(X)
+    Cov4       <- cov4(X)
+    Mlc        <- tM(X)$V
+    Mcd        <- covMcd(X, nmini = 300, kmini = 2, alpha = 0.75)$cov
+    S_pairs    <- list(list(Cov,Cov4), list(Mlc,Cov), list(Mcd,Cov))
+
+    for (pair in seq_along(S_pairs)){
+      set.seed(seeds[seed_fix[i]])
+      S_1            <- S_pairs[[pair]][[1]]
+      S_2            <- S_pairs[[pair]][[2]]
+      ratio          <- chol2inv(chol(S_1)) %*% S_2
+      B              <- t(eigen(ratio)$vectors) # B has rowwise eigenvectors
+      m_1            <- t(matrix(replicate(nrow(X), colMeans(X)), ncol = nrow(X)))
+      X_centered     <- as.matrix(X - m_1)
+      Z              <- as.data.frame(X_centered %*% t(B))
+      
+      for (k in 1:num_items){
+        if (jarque.test(Z[ , k])$p.value >= 0.05) { break }
+      }
+      no_selected <- k - 1
+      
+      if (no_selected > 0) {
+        ## Rowwise 
+        # ID method
+        if (pair == 1) {
+          icsX <- ics2(X, S1 = MeanCov, S2 = Mean3Cov4) 
+        } else if (pair == 2) {
+          icsX <- ics2(X, S1 = tM, S2 = MeanCov)
+        } else {
+          icsX <- ics2(X, S1 = myMCD, S2 = MeanCov) }
+        ics_dists         <- ics.distances(icsX, index = seq_len(no_selected))
+        id_pred           <- outliers_mad(ics_dists, threshold = 2)$outliers_pos
+        precision_row_id  <- sum(id_pred %in% cr_row_idx) / length(id_pred)
+        recall_row_id     <- sum(id_pred %in% cr_row_idx) / length(cr_row_idx)
+        tps               <- unname(id_pred[id_pred %in% cr_row_idx])
+        group_idx         <- which(cr_row_idx %in% tps)
+        from_group_id     <- group[group_idx]
+        from_group_id     <- table(from_group_id)
+        group3_id         <- unname(from_group_id[1])
+        group4_id         <- unname(from_group_id[2])
+        
+        id_pred           <- which(ics_dists >= sort(ics_dists, decreasing=T)[top_e], arr.ind=TRUE)
+        accuracy_id       <- sum(id_pred %in% cr_row_idx) / length(cr_row_idx)
+        
+        # MMD method
+        res_mmd           <- outliers_mcd(Z[, 1:no_selected], alpha = 0.10)
+        mmd_pred          <- unname(res_mmd$outliers_pos)
+        precision_row_mmd <- sum(mmd_pred %in% cr_row_idx) / length(mmd_pred)
+        recall_row_mmd    <- sum(mmd_pred %in% cr_row_idx) / length(cr_row_idx) 
+        tps               <- unname(mmd_pred[mmd_pred %in% cr_row_idx])
+        group_idx         <- which(cr_row_idx %in% tps)
+        from_group_mmd    <- group[group_idx]
+        from_group_mmd    <- table(from_group_mmd)
+        group3_mmd        <- unname(from_group_mmd[1])
+        group4_mmd        <- unname(from_group_mmd[2])
+        
+        dist_from_center  <- res_mmd$dist_from_center
+        mmd_pred          <- 
+          which(dist_from_center >= sort(dist_from_center, decreasing=T)[top_e], arr.ind=TRUE)
+        mmd_pred          <- unname(mmd_pred)
+        accuracy_mmd      <- sum(mmd_pred %in% cr_row_idx) / length(cr_row_idx)
+
+        ## Cellwise 
+        mad_pred   <- c()
+        for (f in 1:no_selected) {
+          out_ind  <- outliers_mad(B[f, ], threshold = 3)$outliers_pos
+          mad_pred <- append(mad_pred, out_ind) }
+        mad_pred   <- unique(mad_pred)
+        
+        ps_col_mmd_i     <- c()
+        rs_col_mmd_i     <- c()
+        ps_col_id_i      <- c()
+        rs_col_id_i      <- c()
+        row_pred_list    <- list(id_pred, mmd_pred)
+        for (method in seq_along(row_pred_list)) {
+          row_pred_idx <- row_pred_list[[method]]
+          for (g in row_pred_idx) {
+            if (g %in% cr_row_idx) {
+              idx          <- which(cr_row_idx == g)
+              cr_cells     <- cr_col_idx[idx]:num_items
+              recall       <- sum(mad_pred %in% cr_cells) / length(cr_cells)
+              no_cell_pred <- length(mad_pred)
+              if (no_cell_pred == 0) {
+                precision  <- 0
+              } else {
+                precision  <- sum(mad_pred %in% cr_cells) / no_cell_pred} } 
+            else {
+              recall       <- 0
+              precision    <- 0 }
+            
+            if (method == 1) {
+              ps_col_id_i  <- append(ps_col_id_i, precision)
+              rs_col_id_i  <- append(rs_col_id_i, recall)
+            } else {
+              ps_col_mmd_i <- append(ps_col_mmd_i, precision)
+              rs_col_mmd_i <- append(rs_col_mmd_i, recall) } } }
+        precision_col_id   <- mean(ps_col_id_i)
+        recall_col_id      <- mean(rs_col_id_i)
+        precision_col_mmd  <- mean(ps_col_mmd_i)
+        recall_col_mmd     <- mean(rs_col_mmd_i)
+      } else {
+        mad_pred           <- NA
+        precision_row_id   <- NA
+        recall_row_id      <- NA
+        precision_col_id   <- NA
+        recall_col_id      <- NA
+        precision_row_mmd  <- NA
+        recall_row_mmd     <- NA
+        precision_col_mmd  <- NA
+        recall_col_mmd     <- NA
+        group3_id          <- NA
+        group4_id          <- NA
+        group3_mmd         <- NA
+        group4_mmd         <- NA
+        accuracy_id        <- NA
+        accuracy_mmd       <- NA }
+      
+      if (pair == 1) {
+        no_com_cov     <- c(no_com_cov, no_selected)
+        items_flag_cov <- c(items_flag_cov, paste(mad_pred,collapse=" "))
+        
+        group3_id_cov   <- c(group3_id_cov, group3_id)
+        group4_id_cov   <- c(group4_id_cov, group4_id)
+        
+        group3_mmd_cov  <- c(group3_mmd_cov, group3_mmd)
+        group4_mmd_cov  <- c(group4_mmd_cov, group4_mmd)
+        
+        ps_row_id_cov  <- c(ps_row_id_cov, precision_row_id)
+        rs_row_id_cov  <- c(rs_row_id_cov, recall_row_id)
+        as_id_cov      <- c(as_id_cov, accuracy_id)
+        ps_col_id_cov  <- c(ps_col_id_cov, precision_col_id)
+        rs_col_id_cov  <- c(rs_col_id_cov, recall_col_id)
+        
+        ps_row_mmd_cov <- c(ps_row_mmd_cov, precision_row_mmd)
+        rs_row_mmd_cov <- c(rs_row_mmd_cov, recall_row_mmd)
+        as_mmd_cov     <- c(as_mmd_cov, accuracy_mmd)
+        ps_col_mmd_cov <- c(ps_col_mmd_cov, precision_col_mmd)
+        rs_col_mmd_cov <- c(rs_col_mmd_cov, recall_col_mmd)
+      } else if (pair == 2) {
+        no_com_mlc     <- c(no_com_mlc, no_selected)
+        items_flag_mlc <- c(items_flag_mlc, paste(mad_pred,collapse=" "))
+        
+        group3_id_mlc   <- c(group3_id_mlc, group3_id)
+        group4_id_mlc   <- c(group4_id_mlc, group4_id)
+        
+        group3_mmd_mlc  <- c(group3_mmd_mlc, group3_mmd)
+        group4_mmd_mlc  <- c(group4_mmd_mlc, group4_mmd)
+        
+        ps_row_id_mlc  <- c(ps_row_id_mlc, precision_row_id)
+        rs_row_id_mlc  <- c(rs_row_id_mlc, recall_row_id)
+        as_id_mlc      <- c(as_id_mlc, accuracy_id)
+        ps_col_id_mlc  <- c(ps_col_id_mlc, precision_col_id)
+        rs_col_id_mlc  <- c(rs_col_id_mlc, recall_col_id)
+        
+        ps_row_mmd_mlc <- c(ps_row_mmd_mlc, precision_row_mmd)
+        rs_row_mmd_mlc <- c(rs_row_mmd_mlc, recall_row_mmd)
+        as_mmd_mlc     <- c(as_mmd_mlc, accuracy_mmd)
+        ps_col_mmd_mlc <- c(ps_col_mmd_mlc, precision_col_mmd)
+        rs_col_mmd_mlc <- c(rs_col_mmd_mlc, recall_col_mmd)
+      } else {
+        no_com_mcd     <- c(no_com_mcd, no_selected)
+        items_flag_mcd <- c(items_flag_mcd, paste(mad_pred,collapse=" "))
+        
+        group3_id_mcd   <- c(group3_id_mcd, group3_id)
+        group4_id_mcd   <- c(group4_id_mcd, group4_id)
+        
+        group3_mmd_mcd  <- c(group3_mmd_mcd, group3_mmd)
+        group4_mmd_mcd  <- c(group4_mmd_mcd, group4_mmd)
+        
+        ps_row_id_mcd  <- c(ps_row_id_mcd, precision_row_id)
+        rs_row_id_mcd  <- c(rs_row_id_mcd, recall_row_id)
+        as_id_mcd      <- c(as_id_mcd, accuracy_id)
+        ps_col_id_mcd  <- c(ps_col_id_mcd, precision_col_id)
+        rs_col_id_mcd  <- c(rs_col_id_mcd, recall_col_id)
+        
+        ps_row_mmd_mcd <- c(ps_row_mmd_mcd, precision_row_mmd)
+        rs_row_mmd_mcd <- c(rs_row_mmd_mcd, recall_row_mmd)
+        as_mmd_mcd      <- c(as_mmd_mcd, accuracy_mmd)
+        ps_col_mmd_mcd <- c(ps_col_mmd_mcd, precision_col_mmd)
+        rs_col_mmd_mcd <- c(rs_col_mmd_mcd, recall_col_mmd) } 
+    }
+    
+    # BM MH
+    res_md    <- mahad(X, plot = FALSE, flag = TRUE, na.rm = FALSE, confidence = 0.90)
+    md_pred   <- as.integer(rownames(res_md[res_md$flagged == TRUE, ]))
+    precision <- sum(md_pred %in% cr_row_idx) / length(md_pred)
+    recall    <- sum(md_pred %in% cr_row_idx) / length(cr_row_idx)
+    ps_row_md <- c(ps_row_md, precision)
+    rs_row_md <- c(rs_row_md, recall)
+    
+    dists     <- res_md$d_sq
+    md_pred   <- which(dists >= sort(dists, decreasing=T)[top_e], arr.ind=TRUE)
+    as_md     <- c(as_md, sum(md_pred %in% cr_row_idx) / length(cr_row_idx))
+      
+    # BM GP
+    X_gp      <- X - 1
+    res_gp    <- Gpoly(X_gp, num_likert)
+    gp_pred   <- flagged.resp(res_gp, Blvl = 0.10)$Scores[, "FlaggedID"]
+    precision <- sum(gp_pred %in% cr_row_idx) / length(gp_pred)
+    recall    <- sum(gp_pred %in% cr_row_idx) / length(cr_row_idx)
+    ps_row_gp <- c(ps_row_gp, precision)
+    rs_row_gp <- c(rs_row_gp, recall)
+    
+    pfscores  <- unlist(res_gp$PFscores)
+    gp_pred   <- which(pfscores >= sort(pfscores, decreasing=T)[top_e], arr.ind=TRUE)
+    gp_pred   <- unname(gp_pred)
+    as_gp     <- c(as_gp, sum(gp_pred %in% cr_row_idx) / length(cr_row_idx))
+}
+
+ps_row_id  <- data.frame(ps_row_id_cov, ps_row_id_mlc, ps_row_id_mcd)
+rs_row_id  <- data.frame(rs_row_id_cov, rs_row_id_mlc, rs_row_id_mcd)
+as_id      <- data.frame(as_id_cov, as_id_mlc, as_id_mcd)
+ps_row_mmd <- data.frame(ps_row_mmd_cov, ps_row_mmd_mlc, ps_row_mmd_mcd)
+rs_row_mmd <- data.frame(rs_row_mmd_cov, rs_row_mmd_mlc, rs_row_mmd_mcd)
+as_mmd     <- data.frame(as_mmd_cov, as_mmd_mlc, as_mmd_mcd)
+
+ps_row_bm  <- data.frame(ps_row_md, ps_row_gp)
+rs_row_bm  <- data.frame(rs_row_md, rs_row_gp)
+as_bm      <- data.frame(as_md, as_gp)
+
+ps_col_id  <- data.frame(ps_col_id_cov, ps_col_id_mlc, ps_col_id_mcd)
+rs_col_id  <- data.frame(rs_col_id_cov, rs_col_id_mlc, rs_col_id_mcd)
+ps_col_mmd <- data.frame(ps_col_mmd_cov, ps_col_mmd_mlc, ps_col_mmd_mcd)
+rs_col_mmd <- data.frame(rs_col_mmd_cov, rs_col_mmd_mlc, rs_col_mmd_mcd)
+
+no_com     <- data.frame(no_com_cov, no_com_mlc, no_com_mcd)
+items_flag <- data.frame(items_flag_cov, items_flag_mlc, items_flag_mcd)
+
+group3     <- data.frame(group3_id_cov, group3_id_mlc, group3_id_mcd, 
+                         group3_mmd_cov, group3_id_mlc, group3_id_mcd)
+group4     <- data.frame(group4_id_cov, group4_id_mlc, group4_id_mcd,
+                         group4_mmd_cov, group3_mmd_mlc, group4_mmd_mcd)
+group      <- mapply(rbind, group3, group4)
+group      <- group / true_group
+rownames(group) <- c("3", "4", "3", "4", "3", "4")
+
+file_name <- "ipip_results.RData"
+save(ps_row_id, rs_row_id, ps_row_mmd, rs_row_mmd,
+     ps_row_bm, rs_row_bm, as_id, as_mmd, as_bm,
+     ps_col_id, rs_col_id, ps_col_mmd, rs_col_mmd,
+     no_com, items_flag, 
+     group,
+     file = file_name)
+
+toc()
+
+```

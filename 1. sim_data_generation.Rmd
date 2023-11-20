@@ -1,0 +1,310 @@
+```{r warning=FALSE}
+
+### Load packages and set parameters ###
+
+packages <- c("simstudy", "gtools", "tictoc")
+invisible(lapply(packages, library, character.only=TRUE))
+options(scipen = 999)
+options(digits = 7)
+
+set.seed(88888888)
+
+R              <- 1000L
+n              <- 1000L
+num_constructs <- 4L
+construct_size <- 5L
+num_likert     <- 5L
+wc_correlation <- 0.75
+num_items      <- construct_size * num_constructs
+seeds          <- as.integer(round(1e8 * runif(R), 0))
+
+tic("Data generation simulations 1a, 1b and 2 completed and saved")
+
+```
+
+```{r}
+
+tic("Data generation simulations 1a and 1b completed")
+
+### Prepare simulations 1a and 1b input ###
+
+# Correlation matrix
+construct_pairs     <- combinations(n = num_constructs, r = 2, 
+                                    repeats.allowed = F, v = 1:num_constructs)
+# Manual input
+bc_indicator        <- list(c(1,3), c(2,4))
+bc_correlation      <- 0.45
+bc_correlation_sign <- c()
+for (pair in seq_len(nrow(construct_pairs))) {
+  if (any(sapply(bc_indicator,
+                 identical,
+                 as.numeric(construct_pairs[pair,])))) {
+    bc_correlation_sign <- append(bc_correlation_sign, bc_correlation)
+  }
+  else {
+    bc_correlation_sign <-
+      append(bc_correlation_sign, -1 * bc_correlation)
+  }
+}
+
+Rho <- matrix(0.0, nrow = num_items, ncol = num_items)
+nam <- rep(NA_character_, num_items)
+for (i in 0:(num_constructs - 1)) {
+  interval                <- 1:construct_size + i * construct_size
+  Rho[interval, interval] <- i + 2
+  nam[interval]           <- paste0(i + 1)
+}
+for (block in seq_along(bc_correlation_sign)) {
+  construct_1                <- construct_pairs[block, 1]
+  construct_2                <- construct_pairs[block, 2]
+  first_idx                  <- ((construct_1 - 1) * construct_size + 1):(construct_1*construct_size)
+  second_idx                 <- ((construct_2 - 1) * construct_size + 1):(construct_2*construct_size)
+  Rho[first_idx, second_idx] <- bc_correlation_sign[block]
+  Rho[second_idx, first_idx] <- bc_correlation_sign[block]
+}
+diag(Rho)                             <- 1.0
+Rho[Rho %in% 2:(num_constructs + 1L)] <- wc_correlation
+
+# Answer distributions
+dist_sign                    <- rep(1, num_constructs)
+dist_sign[bc_indicator[[2]]] <- -1
+neutral_type                 <- c(0.05, 0.25, 0.40, 0.25, 0.05)
+agree_type                   <- c(0.01, 0.04, 0.15, 0.40, 0.40)
+disagree_type                <- rev(agree_type)
+
+baseprobs_neutral            <- Reduce(rbind, rep(list(neutral_type), num_items))
+baseprobs_agree              <- list()
+for (sign in dist_sign) {
+  if (sign == 1) {
+    baseprobs_agree <-
+      append(baseprobs_agree, list(t(replicate(construct_size, agree_type))))
+  } else {
+    baseprobs_agree <-
+      append(baseprobs_agree, list(t(replicate(construct_size, disagree_type))))
+  }
+}
+baseprobs_agree    <- Reduce(rbind, baseprobs_agree)
+baseprobs_disagree <- baseprobs_agree[, ncol(baseprobs_agree):1]
+baseprobs          <- list(baseprobs_neutral, baseprobs_agree, baseprobs_disagree)
+
+# Contamination levels
+epsilons           <- c(0.05, 0.10, 0.15)
+num_epsilons       <- length(epsilons)
+
+### Generate simulations 1a and 1b data sets ###
+
+# Save contamination location
+cr_row    <- list() # r loc for e=5% (r*3-2), e=10% (r*3-1) and e=15% (r*3)
+
+cr_col_1a <- list()
+all_X_1a  <- list()
+
+all_X_1b  <- list()
+cr_col_1b <- list()
+
+# Simulate clean data and contaminate
+for (r in seq_len(R)) {
+  set.seed(seeds[r])
+  n_dist    <- sample(x = 1:length(baseprobs), size = n, replace = TRUE)
+  n_dist    <- table(n_dist)
+  dX        <- list()
+  for (dist in seq_along(baseprobs)) {
+    dT      <- simstudy::genData(n_dist[dist])
+    dX_dist <-
+      simstudy::genOrdCat(dT,
+                          baseprobs = baseprobs[[dist]],
+                          prefix = "q",
+                          corMatrix = Rho)
+    dX_dist <- as.matrix(dX_dist[,-1])
+    dX_dist <- matrix(as.integer(dX_dist), nrow = n_dist[dist])
+    dX      <- append(dX, list(dX_dist))
+  }
+  dX        <- Reduce(rbind, dX)
+  dX        <- dX[sample(1:nrow(dX)),]
+  
+  # Contamination 1a (.5p)
+  start            <- floor(num_items * 0.5) + 1 
+  cr_array         <- start:num_items
+  for (e in epsilons) {
+    set.seed(seeds[r])
+    num_cr       <- floor(e * n)
+    careless_idx <- sample(x = seq_len(n), size = num_cr, replace = FALSE)
+    X_clean      <- dX
+    cr_col_1a_i  <- list()
+    for (i in seq_along(careless_idx)) {
+      set.seed(seeds[r])
+      row                    <- careless_idx[i]
+      clean                  <- X_clean[row, cr_array]
+      X_clean[row, cr_array] <- sample.int(5, size = length(cr_array), replace =TRUE)
+      same                   <- start - 1 + which(clean == X_clean[row, cr_array])
+      real_cr                <- cr_array[! cr_array %in% same]
+      cr_col_1a_i            <- append(cr_col_1a_i, list(real_cr))
+    }
+    X         <- X_clean
+    cr_row    <- append(cr_row, list(careless_idx))
+    cr_col_1a <- append(cr_col_1a, list(cr_col_1a_i))
+    all_X_1a  <- append(all_X_1a, list(X))
+  }
+  
+  # Contamination 1b (.75p)
+  start        <- floor(num_items * 0.75) + 1
+  cr_array     <- start:num_items
+  for (e in epsilons) {
+    set.seed(seeds[r])
+    num_cr       <- floor(e * n)
+    careless_idx <- sample(x = seq_len(n), size = num_cr, replace = FALSE)
+    X_clean      <- dX
+    cr_col_1b_i  <- list()
+    for (i in seq_along(careless_idx)) {
+      set.seed(seeds[r])
+      row                    <- careless_idx[i]
+      clean                  <- X_clean[row, cr_array]
+      X_clean[row, cr_array] <- sample.int(5, size = length(cr_array), replace =TRUE)
+      same                   <- start - 1 + which(clean == X_clean[row, cr_array])
+      real_cr                <- cr_array[! cr_array %in% same]
+      cr_col_1b_i            <- append(cr_col_1b_i, list(real_cr))
+    }
+    X         <- X_clean
+    cr_col_1b <- append(cr_col_1b, list(cr_col_1b_i))
+    all_X_1b  <- append(all_X_1b, list(X))
+  }
+}
+
+toc()
+
+```
+
+
+```{r}
+
+tic("Data generation simulation 2 completed")
+
+### Prepare simulation 2 input ###
+
+# Correlation matrix
+construct_pairs     <- combinations(n = num_constructs, r = 2, 
+                                    repeats.allowed = F, v = 1:num_constructs)
+# Manual input
+bc_indicator        <- list(c(1,3), c(2,4))
+bc_correlation_in   <- 0.45
+bc_correlation_out  <- -0.3
+bc_correlation_sign <- c()
+for (pair in seq_len(nrow(construct_pairs))) {
+  if (any(sapply(bc_indicator,
+                 identical,
+                 as.numeric(construct_pairs[pair,])))) {
+    bc_correlation_sign <- append(bc_correlation_sign, bc_correlation_in)
+  }
+  else {
+    bc_correlation_sign <-
+      append(bc_correlation_sign, bc_correlation_out)
+  }
+}
+
+Rho <- matrix(0.0, nrow = num_items, ncol = num_items)
+nam <- rep(NA_character_, num_items)
+for (i in 0:(num_constructs - 1)) {
+  interval                <- 1:construct_size + i * construct_size
+  Rho[interval, interval] <- i + 2
+  nam[interval]           <- paste0(i + 1)
+}
+for (block in seq_along(bc_correlation_sign)) {
+  construct_1                <- construct_pairs[block, 1]
+  construct_2                <- construct_pairs[block, 2]
+  first_idx                  <- ((construct_1 - 1) * construct_size + 1):(construct_1*construct_size)
+  second_idx                 <- ((construct_2 - 1) * construct_size + 1):(construct_2*construct_size)
+  Rho[first_idx, second_idx] <- bc_correlation_sign[block]
+  Rho[second_idx, first_idx] <- bc_correlation_sign[block]
+}
+diag(Rho)                             <- 1.0
+Rho[Rho %in% 2:(num_constructs + 1L)] <- wc_correlation
+
+
+# Answer distributions
+dist_sign                    <- rep(1, num_constructs)
+dist_sign[bc_indicator[[2]]] <- -1
+neutral_type                 <- c(0.05, 0.25, 0.40, 0.25, 0.05)
+agree_type                   <- c(0.01, 0.04, 0.15, 0.40, 0.40)
+disagree_type                <- rev(agree_type)
+
+baseprobs_neutral            <- Reduce(rbind, rep(list(neutral_type), num_items))
+baseprobs_agree              <- list()
+for (sign in dist_sign) {
+  if (sign == 1) {
+    baseprobs_agree <-
+      append(baseprobs_agree, list(t(replicate(construct_size, agree_type))))
+  } else {
+    baseprobs_agree <-
+      append(baseprobs_agree, list(t(replicate(construct_size, disagree_type))))
+  }
+}
+baseprobs_agree    <- Reduce(rbind, baseprobs_agree)
+baseprobs_disagree <- baseprobs_agree[, ncol(baseprobs_agree):1]
+baseprobs          <- list(baseprobs_neutral, baseprobs_agree, baseprobs_disagree)
+
+# Contamination levels
+epsilons           <- c(0.05, 0.10, 0.15)
+num_epsilons       <- length(epsilons)
+
+### Generate simulation 2 data sets ###
+
+# Save contamination location
+cr_col_2 <- list()
+all_X_2  <- list()
+
+# Simulate clean data and contaminate
+for (r in seq_len(R)) {
+  set.seed(seeds[r])
+  n_dist    <- sample(x = 1:length(baseprobs), size = n, replace = TRUE)
+  n_dist    <- table(n_dist)
+  dX <- list()
+  for (dist in seq_along(baseprobs)) {
+    dT      <- simstudy::genData(n_dist[dist])
+    dX_dist <- simstudy::genOrdCat(dT, baseprobs = baseprobs[[dist]], prefix = "q", corMatrix = Rho)
+    dX_dist <- as.matrix(dX_dist[, -1])
+    dX_dist <- matrix(as.integer(dX_dist), nrow = n_dist[dist])
+    dX      <- append(dX, list(dX_dist))
+  }
+  dX        <- Reduce(rbind, dX)
+  X_clean   <- dX[sample(1:nrow(dX)), ]
+  
+  # Contamination
+  for (e in epsilons) {
+    set.seed(seeds[r])
+    num_cr           <- floor(e * n)
+    careless_idx     <- sample(x = seq_len(n), size = num_cr, replace = FALSE)
+    starts           <- sample(x = (floor(0.5 * num_items) + 1):(floor(0.75 * num_items) + 1), size = num_cr, replace = TRUE)
+    cr_col_2_i       <- list()
+    for (i in seq_along(careless_idx)) {
+      set.seed(seeds[r])
+      row                    <- careless_idx[i]
+      start                  <- starts[i]
+      cr_array               <- start:num_items
+      clean                  <- X_clean[row, cr_array]
+      X_clean[row, cr_array] <- sample.int(5, size = length(cr_array), replace =TRUE)
+      same                   <- start - 1 + which(clean == X_clean[row, cr_array])
+      real_cr                <- cr_array[! cr_array %in% same]
+      cr_col_2_i            <- append(cr_col_2_i, list(real_cr))
+    }
+    X <- X_clean
+    cr_col_2 <- append(cr_col_2, list(cr_col_2_i))
+    all_X_2  <- append(all_X_2, list(X))
+  }
+}
+
+toc()
+
+``` 
+
+```{r warning=FALSE}
+
+# Save the R simulated data sets as .RData file
+save(n, seeds, num_items, num_likert, num_epsilons, cr_row,
+     all_X_1a, cr_col_1a,
+     all_X_1b, cr_col_1b,
+     all_X_2, cr_col_2,
+     file = "simData.RData")
+toc()
+rm(list = ls())
+
+```
